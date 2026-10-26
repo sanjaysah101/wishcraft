@@ -1,0 +1,6 @@
+node_modules/
+bundle/
+.anna/
+*.log
+.DS_Store
+fixtures/*.local.jsonl

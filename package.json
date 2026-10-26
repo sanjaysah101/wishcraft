@@ -1,0 +1,31 @@
+{
+  "name": "wishcraft",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WishCraft — AI greeting card studio for Anna",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "watch": "vite build --watch",
+    "dev": "anna-app dev --storage aps",
+    "validate": "anna-app validate --strict",
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@anna-ai/cli": "^0.1.61",
+    "@fontsource/atkinson-hyperlegible": "^5.3.0",
+    "@fontsource/caprasimo": "^5.3.0",
+    "@fontsource/caveat": "^5.3.0",
+    "@fontsource/cormorant-garamond": "^5.3.0",
+    "@preact/preset-vite": "^2.10.6",
+    "jsdom": "^30.1.3",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5",
+    "vitest": "^3.2.7"
+  }
+}

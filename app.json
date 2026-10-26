@@ -1,0 +1,13 @@
+{
+  "slug": "wishcraft",
+  "name": "WishCraft",
+  "tagline": "Make a personal card for anyone, in any language: heartfelt words, original art, a voice note and a little song.",
+  "description": "WishCraft turns a few details about someone you care about into a card that feels made just for them.\n\nPick the occasion (birthday, anniversary, thank you, get well, a festival, or anything else), tell WishCraft who it is for and one or two things you love about them. In under a minute you get:\n\n- A personal message written in the language and tone you choose\n- Original card art painted in the style you pick\n- An optional voice note that reads your message aloud\n- An optional short song with lyrics about them\n\nEdit the words, repaint the art, then download the card or share it. Every card is saved in My cards so you can find it again on any device.\n\nCost is shown before you create anything. A full card with art, voice and song usually uses about 10 Anna credits; turning extras off makes it cheaper.",
+  "category": "creative",
+  "logo_file": "web/public/icon.svg",
+  "cover_url": "",
+  "screenshots": [],
+  "homepage_url": "https://github.com/sanjaysah101/wishcraft",
+  "support_url": "https://github.com/sanjaysah101/wishcraft/issues",
+  "privacy_url": "https://github.com/sanjaysah101/wishcraft/blob/main/PRIVACY.md"
+}

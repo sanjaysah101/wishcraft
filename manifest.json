@@ -1,0 +1,117 @@
+{
+  "schema": 3,
+  "required_executas": [],
+  "storage": {
+    "kv": true,
+    "files": true
+  },
+  "system_prompt_addendum": "WishCraft makes personal greeting cards (message, card art, optional voice note and song) in any language. When the user wants a card, wish, greeting or message for someone, open the WishCraft window with open_app_view and pass what you know as payload: {\"occasion\": one of birthday, anniversary, thank-you, congrats, get-well, wedding, new-baby, festival, farewell, sorry, love, just-because (or the festival name, e.g. \"Diwali\"), \"recipient\": their name, \"relationship\": e.g. \"sister\", \"details\": things they love or recent news, \"sender\": the user's name if known, \"language\": language code such as \"en\" or \"hi\"}. Do not write the card yourself in chat; WishCraft writes it, paints the art and lets the user edit, download and share it. Only include details the user actually gave.",
+  "tags": [
+    "greetings",
+    "wishes",
+    "cards",
+    "creative"
+  ],
+  "ui": {
+    "bundle": {
+      "format": "static-spa",
+      "entry": "index.html",
+      "external_origins": []
+    },
+    "form_factors": [
+      "desktop",
+      "mobile"
+    ],
+    "views": [
+      {
+        "name": "main",
+        "title": "WishCraft",
+        "default": true,
+        "entry": "index.html",
+        "min_size": {
+          "w": 360,
+          "h": 480
+        },
+        "default_size": {
+          "w": 980,
+          "h": 720
+        },
+        "max_size": {
+          "w": 1680,
+          "h": 1200
+        },
+        "resizable": true,
+        "movable": true,
+        "single_instance": true
+      }
+    ],
+    "host_api": {
+      "llm": [
+        "complete",
+        "catalog"
+      ],
+      "image": [
+        "generateAsync",
+        "getJob",
+        "cancelJob"
+      ],
+      "audio": [
+        "speak"
+      ],
+      "music": [
+        "generate",
+        "getJob",
+        "cancelJob"
+      ],
+      "storage": [
+        "get",
+        "set",
+        "delete",
+        "list"
+      ],
+      "files": [
+        "upload_init",
+        "upload_finalize",
+        "download_url",
+        "download",
+        "delete"
+      ],
+      "chat": [
+        "append_artifact"
+      ],
+      "mobile": [
+        "share"
+      ],
+      "window": [
+        "set_title"
+      ]
+    },
+    "csp_overrides": {
+      "img-src": [
+        "'self'",
+        "data:",
+        "blob:",
+        "https:"
+      ],
+      "media-src": [
+        "'self'",
+        "data:",
+        "blob:",
+        "https:"
+      ],
+      "connect-src": [
+        "'self'",
+        "https:"
+      ],
+      "font-src": [
+        "'self'",
+        "data:"
+      ]
+    },
+    "state_merge": "last_writer_wins"
+  },
+  "dev": {
+    "seed_storage": {},
+    "user_id": 1
+  }
+}

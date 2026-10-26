@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="WishCraft">
+  <rect width="256" height="256" rx="56" fill="#FAF6FF"/>
+  <path d="M40 92 L128 152 L216 92" fill="none" stroke="#2B1E45" stroke-width="10" stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="40" y="72" width="176" height="128" rx="16" fill="none" stroke="#2B1E45" stroke-width="10"/>
+  <path d="M128 106c20 0 36 4 46 14 10 10 14 26 10 40-3 12-13 22-26 27-6 9-18 15-30 15s-24-6-30-15c-13-5-23-15-26-27-4-14 0-30 10-40 10-10 26-14 46-14z" fill="#D6336C"/>
+  <circle cx="128" cy="156" r="30" fill="none" stroke="#FFB3CB" stroke-width="5" opacity=".8"/>
+  <path d="M110 143 l8 27 l10 -20 l10 20 l8 -27" fill="none" stroke="#FFF4F8" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>
