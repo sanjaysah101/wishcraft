@@ -1,18 +1,37 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { Compose } from "./components/Compose";
-import { History } from "./components/History";
-import { Studio } from "./components/Studio";
-import { anna } from "./lib/anna";
-import { guessLanguage, LANGUAGES, OCCASIONS, type ArtStyleId, type CardFontId, type ToneId } from "./lib/data";
-import { listCards, loadPrefs, removeCard, savePrefs, type SavedCard } from "./lib/history";
-import { useCardJob } from "./lib/job";
-import { estimateCu, planImage, planSong, planVoice, type Catalogs, type Extras } from "./lib/pricing";
-import type { CardRequest } from "./lib/prompts";
-import { loadCatalogs, refreshCredits } from "./lib/services";
+import { ArrowLeftIcon, CoinsIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Wordmark } from "@/components/brand";
+import { CardStudio } from "@/components/card-studio";
+import { Composer, type ExtraInfo } from "@/components/composer";
+import { LivePreview } from "@/components/live-preview";
+import { MyCards } from "@/components/my-cards";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "@/components/ui/toast";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { anna, problemText } from "@/lib/anna";
+import { audioController } from "@/lib/audio";
+import { ART_STYLES, guessLanguage, language, LANGUAGES, LETTERINGS, OCCASIONS, TONES, type LetteringId } from "@/lib/data";
+import { estimate, planImage, planSong, planVoice, type Catalogs, type Extras } from "@/lib/pricing";
+import type { CardRequest } from "@/lib/prompts";
+import {
+  getRecord,
+  listRecords,
+  loadPrefs,
+  loadSession,
+  removeRecord,
+  savePrefs,
+  saveSession,
+  type CardRecord,
+  type Prefs,
+} from "@/lib/records";
+import { loadCatalogs, refreshCredits } from "@/lib/services";
+import { studio, useStudio } from "@/lib/studio";
 
-type View = "make" | "cards";
+type View = "create" | "cards";
 
-const DEFAULT_EXTRAS: Extras = { art: true, voice: true, song: true };
+const DEFAULT_EXTRAS: Extras = { art: true, voice: true, song: false };
 
 function initialRequest(locale?: string): CardRequest {
   return {
@@ -28,217 +47,310 @@ function initialRequest(locale?: string): CardRequest {
   };
 }
 
-/** Prefill from Anna chat: open_app_view(entry_payload={occasion, recipient, ...}). */
+/** Prefill from Anna chat: open_app_view(payload={occasion, recipient, ...}). */
 function fromPayload(p: unknown): Partial<CardRequest> {
   if (!p || typeof p !== "object") return {};
   const o = p as Record<string, unknown>;
-  const str = (k: string, max = 120) => (typeof o[k] === "string" ? (o[k] as string).slice(0, max) : undefined);
+  const str = (k: string, max = 120) => (typeof o[k] === "string" ? (o[k] as string).trim().slice(0, max) : undefined);
   const out: Partial<CardRequest> = {};
-  const occ = str("occasion")?.toLowerCase();
+  const occ = str("occasion", 80);
   if (occ) {
-    const hit = OCCASIONS.find((x) => x.id === occ || x.label.toLowerCase() === occ);
+    const key = occ.toLowerCase();
+    const hit = OCCASIONS.find((x) => x.id === key || x.label.toLowerCase() === key);
     if (hit) out.occasion = hit.id;
     else {
       out.occasion = "festival";
       out.occasionDetail = occ;
     }
   }
-  const map: [keyof CardRequest, string, number][] = [
-    ["recipient", "recipient", 60],
-    ["relationship", "relationship", 60],
-    ["details", "details", 600],
-    ["sender", "sender", 60],
+  const fields: [keyof CardRequest, number][] = [
+    ["recipient", 60],
+    ["relationship", 60],
+    ["details", 600],
+    ["sender", 60],
   ];
-  for (const [field, key, max] of map) {
-    const v = str(key, max);
-    if (v) (out as any)[field] = v;
+  for (const [field, max] of fields) {
+    const v = str(field, max);
+    if (v) (out as Record<string, string>)[field] = v;
   }
   const lang = str("language")?.toLowerCase();
   if (lang) {
-    const hit = LANGUAGES.find((l) => l.code === lang || l.label.toLowerCase().includes(lang));
+    const hit = LANGUAGES.find(
+      (l) => l.code === lang || lang.startsWith(l.code + "-") || l.english.toLowerCase() === lang || l.label.toLowerCase() === lang,
+    );
     if (hit) out.language = hit.code;
   }
   return out;
 }
 
+function fromPrefs(r: CardRequest, p: Prefs, keepLanguage: boolean): CardRequest {
+  return {
+    ...r,
+    sender: r.sender || p.sender || "",
+    language: keepLanguage ? r.language : p.language && LANGUAGES.some((l) => l.code === p.language) ? p.language : r.language,
+    tone: TONES.some((t) => t.id === p.tone) ? (p.tone as CardRequest["tone"]) : r.tone,
+    artStyle: ART_STYLES.some((s) => s.id === p.artStyle) ? (p.artStyle as CardRequest["artStyle"]) : r.artStyle,
+  };
+}
+
+function useWide() {
+  const q = "(min-width: 860px)";
+  return useSyncExternalStore(
+    (fn) => {
+      const m = window.matchMedia(q);
+      m.addEventListener("change", fn);
+      return () => m.removeEventListener("change", fn);
+    },
+    () => window.matchMedia(q).matches,
+  );
+}
+
 export function App() {
-  const [view, setView] = useState<View>("make");
-  const [req, setReq] = useState<CardRequest>(() => ({ ...initialRequest(anna().locale), ...fromPayload(anna().entryPayload) }));
+  const wide = useWide();
+  const card = useStudio();
+  const [ready, setReady] = useState(false);
+  const [view, setView] = useState<View>("create");
+  const [request, setRequest] = useState<CardRequest>(() => initialRequest(anna().locale));
   const [extras, setExtras] = useState<Extras>(DEFAULT_EXTRAS);
-  const [font, setFont] = useState<CardFontId>("hand");
+  const [lettering, setLettering] = useState<LetteringId>("hand");
   const [catalogs, setCatalogs] = useState<Catalogs | null>(null);
   const [credits, setCredits] = useState<number | null>(null);
-  const [cards, setCards] = useState<SavedCard[] | null>(null);
+  const [cards, setCards] = useState<CardRecord[] | null>(null);
   const [cardsError, setCardsError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
-  const catRef = useRef<Catalogs | null>(null);
-  const toastTimer = useRef<number>();
-
-  const notify = useCallback((msg: string) => {
-    setToast(msg);
-    clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 4200);
-  }, []);
+  const [starting, setStarting] = useState(false);
+  const catalogsRef = useRef<Catalogs | null>(null);
 
   const updateCredits = useCallback(() => {
     refreshCredits().then((c) => c !== null && setCredits(c));
   }, []);
 
-  const jobApi = useCardJob(() => catRef.current, updateCredits);
-  const { job } = jobApi;
-
+  // ── Boot: catalogue, prefs, and whatever the user was doing last time ──
   useEffect(() => {
+    studio.onCredits = updateCredits;
     loadCatalogs().then((c) => {
-      catRef.current = c;
+      catalogsRef.current = c;
       setCatalogs(c);
       setCredits(c.remainingCU);
     });
-    loadPrefs().then((p) => {
-      setReq((r) => ({
-        ...r,
-        sender: r.sender || p.sender || "",
-        language: anna().entryPayload && (anna().entryPayload as any).language ? r.language : p.language || r.language,
-        tone: (p.tone as ToneId) || r.tone,
-        artStyle: (p.artStyle as ArtStyleId) || r.artStyle,
-      }));
-      if (p.font) setFont(p.font);
-      if (p.extras) setExtras(p.extras);
-    });
-    const off = anna().on("entry_payload", (payload) => {
-      const patch = fromPayload(payload);
-      if (Object.keys(patch).length) {
-        setReq((r) => ({ ...r, ...patch }));
-        setView("make");
-        jobApi.reset();
+
+    const payload = fromPayload(anna().entryPayload);
+    const fromChat = Object.keys(payload).length > 0;
+    Promise.all([loadPrefs(), loadSession()]).then(async ([prefs, session]) => {
+      if (prefs.lettering && LETTERINGS.some((l) => l.id === prefs.lettering)) setLettering(prefs.lettering);
+      if (prefs.extras) setExtras({ ...DEFAULT_EXTRAS, ...prefs.extras });
+      if (fromChat) {
+        setRequest((r) => fromPrefs({ ...r, ...payload }, prefs, !!payload.language));
+      } else if (session?.draft) {
+        setRequest({ ...initialRequest(anna().locale), ...session.draft.request });
+        setExtras({ ...DEFAULT_EXTRAS, ...session.draft.extras });
+        if (session.draft.lettering) setLettering(session.draft.lettering);
+      } else {
+        setRequest((r) => fromPrefs(r, prefs, false));
       }
+      if (!fromChat && session) {
+        setView(session.view === "cards" ? "cards" : "create");
+        if (session.openCardId) {
+          const rec = await getRecord(session.openCardId);
+          if (rec) void studio.open(rec);
+        }
+      }
+      setReady(true);
     });
-    return off;
-  }, []);
 
-  const available: Extras = useMemo(() => {
-    if (!catalogs) return { art: true, voice: true, song: true };
-    return {
-      art: !!planImage(catalogs.image),
-      voice: !!planVoice(catalogs.tts, req.language),
-      song: !!planSong(catalogs.music),
+    const off = anna().on?.("entry_payload", (p) => {
+      const patch = fromPayload(p);
+      if (!Object.keys(patch).length) return;
+      studio.detach();
+      setRequest((r) => ({ ...initialRequest(anna().locale), sender: r.sender, language: r.language, tone: r.tone, artStyle: r.artStyle, ...patch }));
+      setView("create");
+    });
+    return () => {
+      off?.();
     };
-  }, [catalogs, req.language]);
+  }, [updateCredits]);
 
-  const effective: Extras = { art: extras.art && available.art, voice: extras.voice && available.voice, song: extras.song && available.song };
-  const estimate = catalogs ? estimateCu(catalogs, effective, req.language) : null;
-  const busy = !!job && Object.values(job.stages).some((s) => s.state === "working");
+  // ── Keep the session so closing the window never loses work ──
+  useEffect(() => {
+    if (!ready) return;
+    saveSession({ view, openCardId: card?.record.id ?? null, draft: { request, extras, lettering } });
+  }, [ready, view, card?.record.id, request, extras, lettering]);
 
-  const create = () => {
-    savePrefs({ sender: req.sender, language: req.language, tone: req.tone, artStyle: req.artStyle, font, extras });
-    jobApi.create(req, effective, font);
-  };
+  useEffect(() => {
+    const flush = () => {
+      saveSession({ view, openCardId: studio.get()?.record.id ?? null, draft: { request, extras, lettering } }, true);
+    };
+    const onHide = () => document.visibilityState === "hidden" && flush();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [view, request, extras, lettering]);
 
-  const openCards = async () => {
-    setView("cards");
+  const loadCards = useCallback(async () => {
     setCardsError(null);
     try {
-      setCards(await listCards());
-    } catch {
-      setCardsError("My cards couldn't be opened. Check your connection and try again.");
+      setCards(await listRecords());
+    } catch (e) {
+      setCards(null);
+      setCardsError(problemText(e));
     }
-  };
+  }, []);
 
-  const remove = async (c: SavedCard) => {
+  useEffect(() => {
+    if (view === "cards") void loadCards();
+  }, [view, loadCards, card?.record.stages.card.state]);
+
+  // ── What this account and language can do ──
+  const info = useMemo<Record<keyof Extras, ExtraInfo>>(() => {
+    const name = language(request.language).english;
+    if (!catalogs) return { art: { available: true }, voice: { available: true }, song: { available: true } };
+    const song = planSong(catalogs.music, request.language);
+    return {
+      art: planImage(catalogs.image)
+        ? { available: true }
+        : { available: false, note: "Card art isn't offered on your Anna account right now." },
+      voice: planVoice(catalogs.tts, request.language)
+        ? { available: true }
+        : { available: false, note: `No ${name} voice is available yet. Your card is still written in ${name}.` },
+      song: !song
+        ? { available: false, note: "Songs aren't offered on your Anna account right now." }
+        : song.language !== request.language
+          ? { available: true, note: `Sung in English: ${name} singing isn't available yet.` }
+          : { available: true },
+    };
+  }, [catalogs, request.language]);
+
+  const effective: Extras = {
+    art: extras.art && info.art.available,
+    voice: extras.voice && info.voice.available,
+    song: extras.song && info.song.available,
+  };
+  const cost = catalogs ? estimate(catalogs, effective, request.language) : null;
+  const working = !!card && Object.values(card.record.stages).some((s) => s.state === "working");
+
+  const create = async () => {
+    const cat = catalogsRef.current;
+    if (!cat) {
+      toast.add({ title: "Still connecting to Anna", description: "Try again in a moment.", type: "info" });
+      return;
+    }
+    savePrefs({ sender: request.sender, language: request.language, tone: request.tone, artStyle: request.artStyle, lettering, extras });
+    setStarting(true);
+    audioController.stop();
     try {
-      await removeCard(c);
-      setCards((list) => list?.filter((x) => x.id !== c.id) ?? null);
-      notify("Card deleted.");
-    } catch {
-      notify("The card couldn't be deleted. Try again.");
+      const run = studio.create({ ...request }, effective, lettering, cat);
+      setStarting(false);
+      await run;
+    } finally {
+      setStarting(false);
     }
   };
 
   const newCard = () => {
-    jobApi.reset();
-    setReq((r) => ({ ...initialRequest(), sender: r.sender, language: r.language, tone: r.tone, artStyle: r.artStyle }));
-    setView("make");
+    studio.detach();
+    setRequest((r) => ({ ...r, recipient: "", relationship: "", details: "", occasionDetail: "" }));
+    setView("create");
+    window.scrollTo({ top: 0 });
   };
 
+  const openCard = (r: CardRecord) => {
+    setView("create");
+    void studio.open(r);
+    window.scrollTo({ top: 0 });
+  };
+
+  const deleteCard = async (r: CardRecord) => {
+    if (studio.get()?.record.id === r.id) studio.detach();
+    setCards((cs) => cs?.filter((c) => c.id !== r.id) ?? cs);
+    try {
+      await removeRecord(r);
+      toast.add({ title: "Card deleted", type: "success" });
+    } catch (e) {
+      toast.add({ title: "The card couldn't be deleted", description: problemText(e), type: "error" });
+      void loadCards();
+    }
+  };
+
+  const switchView = (v: View) => {
+    audioController.stop();
+    setView(v);
+  };
+
+  const composer = (
+    <Composer
+      request={request}
+      extras={extras}
+      lettering={lettering}
+      info={info}
+      estimate={cost}
+      credits={credits}
+      busy={starting || (working && !card?.record.words)}
+      onRequest={(p) => setRequest((r) => ({ ...r, ...p }))}
+      onExtras={(p) => setExtras((x) => ({ ...x, ...p }))}
+      onLettering={setLettering}
+      onCreate={create}
+    />
+  );
+
   return (
-    <div class={`app${job ? " has-job" : ""}`}>
-      <header class="top">
-        <h1 class="brand">
-          <span class="brand__seal" aria-hidden="true">
-            W
-          </span>
-          WishCraft
-        </h1>
-        <nav class="tabs" aria-label="Sections">
-          <button type="button" class={`tab${view === "make" ? " is-on" : ""}`} aria-current={view === "make"} onClick={() => setView("make")}>
-            Make a card
-          </button>
-          <button type="button" class={`tab${view === "cards" ? " is-on" : ""}`} aria-current={view === "cards"} onClick={openCards}>
-            My cards
-          </button>
-        </nav>
+    <div className="safe-area">
+    <div className="mx-auto flex min-h-dvh w-full max-w-7xl flex-col gap-6 px-4 pt-4 pb-10 sm:px-6 lg:px-8">
+      <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <Wordmark />
+        <div className="flex items-center gap-3">
+          <Tabs value={view} onValueChange={(v) => switchView(v as View)}>
+            <TabsList aria-label="Sections">
+              <TabsTrigger value="create" className="px-4">
+                Create
+              </TabsTrigger>
+              <TabsTrigger value="cards" className="px-4">
+                My cards
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {credits !== null ? (
+            <Tooltip>
+              <TooltipTrigger render={<Badge variant="outline" className="h-8 gap-1.5 px-3 text-sm tabular-nums" />}>
+                <CoinsIcon data-icon="inline-start" />
+                {Math.floor(credits).toLocaleString()}
+              </TooltipTrigger>
+              <TooltipContent>Anna credits left on your account</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
       </header>
 
-      {view === "make" ? (
-        <main class="workspace">
-          <div class="workspace__compose">
-            <Compose
-              req={req}
-              extras={extras}
-              font={font}
-              estimate={estimate}
-              credits={credits}
-              available={available}
-              busy={busy}
-              onChange={(patch) => setReq((r) => ({ ...r, ...patch }))}
-              onExtras={(patch) => setExtras((x) => ({ ...x, ...patch }))}
-              onFont={setFont}
-              onCreate={create}
-            />
+      <main className="flex flex-1 flex-col">
+        {view === "cards" ? (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-1">
+              <h1 className="font-heading text-4xl leading-tight">My cards</h1>
+              <p className="text-muted-foreground">Open a card to play, edit, download or share it.</p>
+            </div>
+            <MyCards cards={cards} error={cardsError} onOpen={openCard} onDelete={deleteCard} onNew={newCard} onReload={loadCards} />
           </div>
-          <div class="workspace__card">
-            {job ? (
-              <Studio
-                job={job}
-                onRetry={jobApi.retry}
-                onAdd={jobApi.addExtra}
-                onEdit={jobApi.editWords}
-                onFont={jobApi.setFont}
-                onSave={jobApi.save}
-                onStop={jobApi.stop}
-                onNew={newCard}
-                notify={notify}
-              />
-            ) : (
-              <div class="placeholder">
-                <div class="envelope" aria-hidden="true">
-                  <span class="envelope__flap" />
-                  <span class="envelope__seal">W</span>
-                </div>
-                <p class="placeholder__lead">Your card appears here.</p>
-                <p class="hint">Tell WishCraft who it's for and what they're like, then press Create card.</p>
-              </div>
-            )}
+        ) : card ? (
+          <div className="flex flex-col gap-4">
+            <Button variant="ghost" className="self-start" onClick={newCard}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              New card
+            </Button>
+            <CardStudio view={card} catalogs={catalogs} onNew={newCard} split={wide} />
           </div>
-        </main>
-      ) : (
-        <main class="workspace single">
-          <History
-            cards={cards}
-            error={cardsError}
-            onOpen={(c) => {
-              setView("make");
-              jobApi.open(c);
-            }}
-            onDelete={remove}
-            onNew={newCard}
-            onReload={openCards}
-          />
-        </main>
-      )}
-
-      <div class={`toast${toast ? " is-on" : ""}`} role="status" aria-live="polite">
-        {toast}
-      </div>
+        ) : wide ? (
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start gap-6 xl:grid-cols-[minmax(0,6fr)_minmax(0,5fr)] xl:gap-8">
+            {composer}
+            <div className="sticky top-4">
+              <LivePreview request={request} lettering={lettering} />
+            </div>
+          </div>
+        ) : (
+          composer
+        )}
+      </main>
+    </div>
     </div>
   );
 }

@@ -1,6 +1,10 @@
 import { anna, fetchBlob } from "./anna";
-import { buildWordsPrompt, normaliseLyrics, parseWords, type CardRequest, type CardWords } from "./prompts";
+import { ensureMp3 } from "./mp3";
 import type { CatalogModel, Catalogs, ImagePlan, SongPlan, VoicePlan } from "./pricing";
+import { songSeconds } from "./pricing";
+import { buildWordsPrompt, normaliseLyrics, parseWords, type CardRequest, type CardWords, type LyricsSpec } from "./prompts";
+
+// ── Catalogue & credits ─────────────────────────────────────────────
 
 export async function loadCatalogs(): Promise<Catalogs> {
   const get = async (serviceType: string) => {
@@ -28,8 +32,10 @@ export async function refreshCredits(): Promise<number | null> {
   }
 }
 
-export async function writeWords(req: CardRequest): Promise<CardWords> {
-  const { system, user } = buildWordsPrompt(req);
+// ── Words ───────────────────────────────────────────────────────────
+
+export async function writeWords(req: CardRequest, lyrics: LyricsSpec | null): Promise<CardWords> {
+  const { system, user } = buildWordsPrompt(req, lyrics);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await anna().llm.complete({
@@ -47,68 +53,132 @@ export async function writeWords(req: CardRequest): Promise<CardWords> {
   throw lastErr;
 }
 
-export interface Art {
-  blob: Blob;
-  r2Key?: string;
+// ── Async media jobs (image + music) ────────────────────────────────
+
+const TERMINAL = new Set(["succeeded", "failed", "cancelled", "expired"]);
+
+export class JobError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
-export async function paintArt(prompt: string, plan: ImagePlan, signal?: AbortSignal): Promise<Art> {
-  const args: Record<string, unknown> = { prompt, model: plan.model, size: plan.size, n: 1, clientTag: "card-art" };
+/**
+ * Poll a host media job until it ends. Jobs keep running on Anna's servers
+ * even if the window is closed, so a reopened app resumes from the saved id.
+ */
+export async function awaitJob(
+  ns: "image" | "music",
+  jobId: string,
+  opts: { signal?: AbortSignal; onState?: (state: string) => void; timeoutMs?: number } = {},
+): Promise<any> {
+  const started = Date.now();
+  const limit = opts.timeoutMs ?? 12 * 60 * 1000;
+  let delay = 2500;
+  for (;;) {
+    if (opts.signal?.aborted) throw new JobError("cancelled", "Stopped.");
+    let view: any;
+    try {
+      view = await anna()[ns].getJob({ jobId });
+    } catch (e: any) {
+      const code = String(e?.code ?? "");
+      if (code.includes("NOT_FOUND")) throw new JobError(code, "This job is no longer available.");
+      view = null;
+    }
+    if (view) {
+      opts.onState?.(view.state);
+      if (view.state === "succeeded") return view;
+      if (TERMINAL.has(view.state)) {
+        throw new JobError(String(view.error?.code ?? view.state), String(view.error?.message ?? `The job ${view.state}.`));
+      }
+    }
+    if (Date.now() - started > limit) throw new JobError("TIMEOUT", "This step took too long.");
+    await sleep(delay, opts.signal);
+    delay = Math.min(delay + 500, 5000);
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+}
+
+export async function submitArt(prompt: string, plan: ImagePlan, key: string): Promise<string> {
+  const args: Record<string, unknown> = {
+    prompt,
+    model: plan.model,
+    size: plan.size,
+    n: 1,
+    clientTag: "card-art",
+    idempotencyKey: key,
+  };
   if (plan.quality) args.quality = plan.quality;
-  const view = await anna().image.generateAwait(args, { signal, timeoutMs: 6 * 60 * 1000 });
+  const job = await anna().image.generateAsync(args);
+  return String(job.jobId);
+}
+
+export async function artFromJob(view: any): Promise<Blob> {
   const img = view?.result?.images?.[0];
-  if (!img?.url) throw new Error("The art service returned no image.");
-  return { blob: await fetchBlob(img.url), r2Key: img.r2Key };
+  if (!img?.url) throw new JobError("EMPTY", "The art service returned no image.");
+  return fetchBlob(img.url);
 }
 
-export interface Clip {
-  blob: Blob;
-  mimeType: string;
-}
-
-export async function speak(text: string, plan: VoicePlan, language: string): Promise<Clip> {
-  const args: Record<string, unknown> = { text: text.slice(0, plan.maxChars), model: plan.model, format: "mp3" };
-  if (plan.voice) args.voice = plan.voice;
-  if (language) args.language = language;
-  let res: any;
-  try {
-    res = await anna().audio.speak(args, { timeoutMs: 150_000 });
-  } catch (e: any) {
-    // Some models reject an explicit language; retry with the model's defaults.
-    if (String(e?.code ?? "").includes("OPTION") || String(e?.code ?? "").includes("INVALID")) {
-      delete args.language;
-      res = await anna().audio.speak(args, { timeoutMs: 150_000 });
-    } else throw e;
-  }
-  if (res?.audioBase64) {
-    const bin = atob(res.audioBase64);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return { blob: new Blob([bytes], { type: res.mimeType || "audio/mpeg" }), mimeType: res.mimeType || "audio/mpeg" };
-  }
-  if (!res?.url) throw new Error("The voice service returned no audio.");
-  const blob = await fetchBlob(res.url);
-  return { blob, mimeType: res.mimeType || blob.type || "audio/mpeg" };
-}
-
-export async function composeSong(words: CardWords, plan: SongPlan, signal?: AbortSignal): Promise<Clip & { lyrics: string }> {
+export async function submitSong(words: CardWords, plan: SongPlan, key: string): Promise<string> {
   const lyrics = normaliseLyrics(words.lyrics);
-  const style = words.songStyle || "cheerful acoustic celebration song, warm vocals, claps";
-  const args: Record<string, unknown> = { model: plan.model, clientTag: "card-song" };
+  const style = words.songStyle || "cheerful acoustic celebration song, warm vocals, light percussion";
+  const args: Record<string, unknown> = { model: plan.model, clientTag: "card-song", idempotencyKey: key };
   if (plan.lyricsField) {
     args.prompt = style;
     if (lyrics) args.lyrics = lyrics;
   } else {
-    args.prompt = lyrics ? `${style}\n\nLyrics:\n${lyrics}` : style;
+    args.prompt = lyrics ? `${style}. Sing these lyrics exactly, all of them:\n${lyrics}` : style;
   }
-  if (plan.durationSec) args.durationSec = plan.durationSec;
-  const view = await anna().music.generateAwait(args, { signal, timeoutMs: 8 * 60 * 1000 });
-  const url = view?.result?.url;
-  if (!url) throw new Error("The music service returned no song.");
-  const blob = await fetchBlob(url);
-  return { blob, mimeType: view.result.mimeType || blob.type || "audio/wav", lyrics: view.result.lyrics || lyrics };
+  if (plan.variableLength) args.durationSec = songSeconds(lyrics, plan);
+  if (plan.formats.includes("mp3")) args.format = "mp3";
+  const job = await anna().music.generate(args);
+  return String(job.jobId);
 }
 
-// ── APS files ──────────────────────────────────────────────────────────
+export async function songFromJob(view: any): Promise<{ blob: Blob; lyrics: string }> {
+  const url = view?.result?.url;
+  if (!url) throw new JobError("EMPTY", "The music service returned no song.");
+  const raw = await fetchBlob(url);
+  // Some models (Lyria) put production notes in `lyrics`; only trust real, tagged lyrics.
+  const echoed = String(view.result.lyrics ?? "");
+  const lyrics = /\[(verse|chorus)/i.test(echoed) && !/^\s*caption:/i.test(echoed) ? echoed : "";
+  return { blob: await ensureMp3(raw), lyrics };
+}
+
+// ── Voice ───────────────────────────────────────────────────────────
+
+export async function speak(text: string, plan: VoicePlan): Promise<Blob> {
+  const args: Record<string, unknown> = {
+    text: text.slice(0, plan.maxChars),
+    model: plan.model,
+    voice: plan.voice,
+    format: "mp3",
+  };
+  const res = await anna().audio.speak(args, { timeoutMs: 150_000 });
+  let blob: Blob;
+  if (res?.audioBase64) {
+    const bin = atob(res.audioBase64);
+    blob = new Blob([Uint8Array.from(bin, (c) => c.charCodeAt(0))], { type: res.mimeType || "audio/mpeg" });
+  } else if (res?.url) {
+    blob = await fetchBlob(res.url);
+  } else {
+    throw new JobError("EMPTY", "The voice service returned no audio.");
+  }
+  return ensureMp3(blob);
+}
+
+// ── APS files ───────────────────────────────────────────────────────
 
 export async function saveFile(path: string, blob: Blob): Promise<string> {
   const type = blob.type || "application/octet-stream";
@@ -136,14 +206,14 @@ export async function deleteFile(path: string) {
   }
 }
 
-/** Host-mediated download; falls back to a local anchor when the host can't. */
+/** Host-mediated download (top-level browsing context); falls back to a local link. */
 export async function downloadFile(path: string | null, blob: Blob | null, filename: string) {
   if (path) {
     try {
       await anna().files.download({ path, filename });
       return;
     } catch {
-      /* fall through */
+      /* fall through to a local download */
     }
   }
   if (!blob) throw new Error("Nothing to download yet.");

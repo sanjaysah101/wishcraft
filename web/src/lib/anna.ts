@@ -7,7 +7,7 @@ export interface AnnaError extends Error {
   details?: Record<string, unknown>;
 }
 
-type Fn = (args?: unknown, opts?: unknown) => Promise<any>;
+type Fn = (args?: any, opts?: any) => Promise<any>;
 type Ns = Record<string, Fn>;
 
 export interface Runtime {
@@ -25,6 +25,15 @@ export interface Runtime {
   locale?: string;
   on(event: string, fn: (payload: any) => void): () => void;
   onThemeChange?(fn: (t: { theme: "light" | "dark" }) => void): () => void;
+}
+
+/** True inside the Anna mobile shell (mobile.* is only implemented there). */
+export function isMobileContainer(): boolean {
+  try {
+    return /mobile-shell/.test(window.location.href) || new URLSearchParams(window.location.search).get("container") === "mobile";
+  } catch {
+    return false;
+  }
 }
 
 let runtime: Runtime | null = null;
@@ -76,7 +85,7 @@ const PROBLEM_TEXT: Record<Problem, string> = {
   not_granted:
     "WishCraft needs your permission for this step. Allow it in the Anna permission prompt (or Installed apps → WishCraft → Permissions), then try again.",
   no_credits: "You don't have enough Anna credits for this step. Turn off some extras or top up your credits, then try again.",
-  rejected: "The image service declined this request. Try different details or another art style.",
+  rejected: "The service declined this request. Try different details or another style.",
   rate_limited: "Anna is busy right now. Wait a few seconds and try again.",
   timeout: "This step took too long. Try again.",
   offline: "WishCraft couldn't reach Anna. Check your connection and try again.",

@@ -1,68 +1,88 @@
 import { describe, expect, it } from "vitest";
-import { estimateCu, planImage, planSong, planVoice, songCu, type Catalogs } from "../web/src/lib/pricing";
-
-// Shapes and prices as returned by anna.llm.catalog on 2026-10-27.
-const catalogs: Catalogs = {
-  remainingCU: 800,
-  image: [
-    {
-      modelName: "openai/gpt-image-2",
-      pricing: { unit: "per_image", cuPerImage: 182, cuBySizeQuality: { "1024x1536": { low: 4, medium: 36, high: 142 } } },
-    },
-    { modelName: "bytedance/seedream/v5/pro/text-to-image", pricing: { unit: "per_image", cuPerImage: 58, cuByMaxPixels: [{ maxPixels: 2359296, cu: 58 }] } },
-  ],
-  tts: [
-    {
-      modelName: "qwen3-tts-flash-realtime",
-      pricing: { cuPer1kChars: 1 },
-      capabilities: { maxCharsPerCall: 2000, voices: [{ id: "Cherry", languages: ["zh", "en"] }] },
-    },
-    {
-      modelName: "xai/tts/v1",
-      pricing: { cuPer1kChars: 13 },
-      capabilities: { maxCharsPerCall: 2000, voices: [{ id: "Ara", languages: ["en", "hi"] }] },
-    },
-  ],
-  music: [
-    { modelName: "fal-ai/minimax-music/v2.6", pricing: { unit: "per_song", cuPerSong: 129 }, capabilities: { lyrics: true, lyricsMode: "field", duration: { type: "fixed" } } },
-    {
-      modelName: "fal-ai/ace-step",
-      pricing: { unit: "per_second", cuPerSecond: 1, cuExample: { durationSec: 60, cu: 10 } },
-      capabilities: { lyrics: true, lyricsMode: "field", duration: { type: "range", min: 5, max: 240, default: 60 } },
-    },
-    { modelName: "fal-ai/stable-audio-25/text-to-audio", pricing: { unit: "per_song", cuPerSong: 172 }, capabilities: { lyrics: false, instrumentalOnly: true } },
-  ],
-};
+import { estimate, lyricsSpec, planImage, planSong, planVoice, songCu, songSeconds } from "../web/src/lib/pricing";
+import { catalogs } from "./fixtures";
 
 describe("planImage", () => {
-  it("picks GPT Image 2 at low quality, portrait", () => {
+  it("uses GPT Image 2 at low quality in portrait", () => {
     expect(planImage(catalogs.image)).toEqual({ model: "openai/gpt-image-2", size: "1024x1536", quality: "low", cu: 4 });
   });
-  it("falls back to the cheapest model", () => {
+  it("falls back to the cheapest model, or nothing", () => {
     expect(planImage(catalogs.image.slice(1))?.model).toBe("bytedance/seedream/v5/pro/text-to-image");
     expect(planImage([])).toBeNull();
   });
 });
 
 describe("planVoice", () => {
-  it("uses the cheapest model whose voices speak the language", () => {
-    expect(planVoice(catalogs.tts, "en")).toMatchObject({ model: "qwen3-tts-flash-realtime", voice: "Cherry" });
+  it("picks the cheapest voice that speaks the language", () => {
+    expect(planVoice(catalogs.tts, "en")).toMatchObject({ model: "qwen3-tts-flash-realtime" });
+    expect(planVoice(catalogs.tts, "es")).toMatchObject({ model: "qwen3-tts-flash-realtime", voice: "Sonrisa" });
+  });
+  it("prefers a native speaker", () => {
+    expect(planVoice(catalogs.tts, "en")?.voice).toBe("Ethan");
+  });
+  it("never reads Hindi with a Chinese/English voice", () => {
     expect(planVoice(catalogs.tts, "hi")).toMatchObject({ model: "xai/tts/v1", voice: "Ara" });
+  });
+  it("returns null when no voice speaks the language", () => {
+    expect(planVoice(catalogs.tts, "bn")).toBeNull();
+    expect(planVoice(catalogs.tts, "sw")).toBeNull();
   });
 });
 
 describe("planSong", () => {
-  it("chooses ACE-Step for a 30-second sung song", () => {
-    expect(planSong(catalogs.music)).toEqual({ model: "fal-ai/ace-step", durationSec: 30, lyricsField: true, cu: 5 });
+  it("uses ACE-Step for English with a length sized to the lyrics", () => {
+    const p = planSong(catalogs.music, "en")!;
+    expect(p).toMatchObject({ model: "fal-ai/ace-step", language: "en", variableLength: true, lines: 8, lyricsField: true });
+    expect(p.minSec).toBeGreaterThanOrEqual(35);
   });
-  it("prices per-minute models by started minute", () => {
-    expect(songCu({ modelName: "x", pricing: { unit: "per_minute", cuPerMinute: 517 } }, 30)).toBe(517);
+  it("sings Hindi with a model that supports Hindi lyrics", () => {
+    const p = planSong(catalogs.music, "hi")!;
+    expect(p).toMatchObject({ model: "google/lyria-3", language: "hi", variableLength: false, lyricsField: false });
+    expect(p.lines).toBe(4);
+  });
+  it("falls back to English lyrics when no model sings the language", () => {
+    expect(planSong(catalogs.music, "bn")).toMatchObject({ model: "fal-ai/ace-step", language: "en" });
+  });
+  it("ignores instrumental-only models", () => {
+    expect(planSong(catalogs.music.filter((m) => m.capabilities?.instrumentalOnly), "en")).toBeNull();
+  });
+  it("lyricsSpec follows the plan", () => {
+    expect(lyricsSpec(planSong(catalogs.music, "hi"))).toEqual({ language: "hi", lines: 4 });
+    expect(lyricsSpec(null)).toBeNull();
   });
 });
 
-describe("estimateCu", () => {
-  it("adds words, art, voice and song", () => {
-    expect(estimateCu(catalogs, { art: true, voice: true, song: true }, "en")).toBe(11);
-    expect(estimateCu(catalogs, { art: false, voice: false, song: false }, "en")).toBe(1);
+describe("songSeconds", () => {
+  const plan = { minSec: 35, maxSec: 120 };
+  it("gives eight lines enough time to be sung in full", () => {
+    const lyrics =
+      "[verse]\nPriya grows the reddest tomatoes\nOn her sunny balcony each spring\nLittle sister with the greenest fingers\nEvery leaf is dancing when you sing\n[chorus]\nHappy birthday Priya shine today\nAll the flowers turn to say hooray\nMay your garden grow forever bright\nHappy birthday sister, sleep tonight";
+    const s = songSeconds(lyrics, plan);
+    expect(s).toBeGreaterThanOrEqual(45);
+    expect(s).toBeLessThanOrEqual(80);
+  });
+  it("counts characters for scripts without spaces", () => {
+    const zh = "[verse]\n" + Array(8).fill("生日快乐我的好妹妹").join("\n");
+    expect(songSeconds(zh, plan)).toBeGreaterThan(45);
+  });
+  it("stays inside the model limits", () => {
+    expect(songSeconds("", plan)).toBe(35);
+    expect(songSeconds(Array(80).fill("a very long line of words to sing").join("\n"), plan)).toBe(120);
+  });
+});
+
+describe("costs", () => {
+  it("prices per-minute models by started minute", () => {
+    expect(songCu({ modelName: "x", pricing: { unit: "per_minute", cuPerMinute: 517 } }, 30)).toBe(517);
+  });
+  it("adds up the parts the user turned on", () => {
+    const all = estimate(catalogs, { art: true, voice: true, song: true }, "en");
+    expect(all.parts).toMatchObject({ words: 1, art: 4, voice: 1 });
+    expect(all.parts.song).toBeGreaterThan(0);
+    expect(all.total).toBe(Math.ceil(1 + 4 + 1 + all.parts.song));
+    expect(estimate(catalogs, { art: false, voice: false, song: false }, "en").total).toBe(1);
+  });
+  it("charges nothing for a voice that isn't available", () => {
+    expect(estimate(catalogs, { art: false, voice: true, song: false }, "bn").parts.voice).toBe(0);
   });
 });

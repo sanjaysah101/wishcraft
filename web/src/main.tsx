@@ -1,38 +1,44 @@
-import { render } from "preact";
-import "@fontsource/caprasimo/400.css";
-import "@fontsource/atkinson-hyperlegible/400.css";
-import "@fontsource/atkinson-hyperlegible/700.css";
-import "@fontsource/caveat/500.css";
-import "@fontsource/caveat/700.css";
-import "@fontsource/cormorant-garamond/400.css";
-import "@fontsource/cormorant-garamond/600.css";
-import "./styles.css";
+import "./index.css";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { connect } from "./lib/anna";
+import { Toaster } from "@/components/ui/toast";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { connect } from "@/lib/anna";
 
 const root = document.getElementById("root")!;
 
-function applyTheme(theme: string) {
-  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+function applyTheme(theme?: string) {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+  document.documentElement.style.colorScheme = theme === "dark" ? "dark" : "light";
+}
+
+function applyLocale(locale?: string) {
+  if (locale) document.documentElement.lang = locale;
 }
 
 async function boot() {
   try {
     const rt = await connect();
-    if (rt.onThemeChange) rt.onThemeChange(({ theme }) => applyTheme(theme));
-    else if (rt.theme) applyTheme(rt.theme);
-    try {
-      await rt.window.set_title({ title: "WishCraft" });
-    } catch {
-      /* optional */
-    }
+    applyTheme(rt.theme);
+    applyLocale(rt.locale);
+    rt.onThemeChange?.(({ theme }) => applyTheme(theme));
+    rt.window.set_title({ title: "WishCraft" }).catch(() => {});
     root.textContent = "";
-    render(<App />, root);
+    createRoot(root).render(
+      <StrictMode>
+        <Toaster>
+          <TooltipProvider delay={300}>
+            <App />
+          </TooltipProvider>
+        </Toaster>
+      </StrictMode>,
+    );
   } catch (e) {
     console.error("[wishcraft] connect failed", e);
     root.innerHTML =
-      '<div class="boot-error"><h1>WishCraft</h1><p>WishCraft runs inside Anna. Open it from the Anna app store or by typing #WishCraft in an Anna chat.</p></div>';
+      '<div class="boot-message"><h1>WishCraft</h1><p>WishCraft runs inside Anna. Open it from the Anna app store, or type #WishCraft in an Anna chat.</p></div>';
   }
 }
 
-boot();
+void boot();

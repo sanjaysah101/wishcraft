@@ -1,41 +1,66 @@
 import { describe, expect, it } from "vitest";
-import { fitText, wrapLines } from "../web/src/lib/card";
+import { fitLines, layoutLines, rng, seedFromId, segments } from "../web/src/lib/card";
 
-// Monospace-ish measure: each character is 10px wide at size 20.
-const measureAt = (size: number) => (s: string) => Array.from(s).length * (size / 2);
-const measure = measureAt(20);
+const measure = (s: string) => s.length * 10;
+const text = (l: { pieces: { text: string }[] }) => l.pieces.map((p) => p.text).join("");
 
-describe("wrapLines", () => {
-  it("wraps on word boundaries", () => {
-    expect(wrapLines("happy birthday dear friend", 150, measure)).toEqual(["happy birthday", "dear friend"]);
+describe("layoutLines", () => {
+  it("wraps on word boundaries without leading or trailing spaces", () => {
+    const lines = layoutLines("one two three four five", 100, measure);
+    expect(lines.map(text)).toEqual(["one two", "three four", "five"]);
+    for (const l of lines) expect(l.width).toBeLessThanOrEqual(100);
   });
 
-  it("keeps explicit paragraphs", () => {
-    expect(wrapLines("one\ntwo", 500, measure)).toEqual(["one", "two"]);
+  it("keeps paragraph breaks", () => {
+    expect(layoutLines("a b\nc", 1000, measure).map(text)).toEqual(["a b", "c"]);
   });
 
-  it("breaks CJK text by character", () => {
-    const lines = wrapLines("生日快乐我的朋友祝你幸福", 60, measure, "zh");
-    expect(lines.every((l) => measure(l) <= 60)).toBe(true);
-    expect(lines.join("")).toBe("生日快乐我的朋友祝你幸福");
+  it("breaks words that are wider than a line", () => {
+    const lines = layoutLines("supercalifragilistic", 50, measure);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) expect(l.width).toBeLessThanOrEqual(50);
   });
 
-  it("splits a single over-long word", () => {
-    const lines = wrapLines("supercalifragilistic", 80, measure);
-    expect(lines.every((l) => measure(l) <= 80)).toBe(true);
-    expect(lines.join("")).toBe("supercalifragilistic");
+  it("wraps Chinese without spaces", () => {
+    const lines = layoutLines("生日快乐我的好妹妹愿你天天开心", 60, measure, "zh");
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) expect(l.width).toBeLessThanOrEqual(60);
+    expect(lines.map(text).join("")).toBe("生日快乐我的好妹妹愿你天天开心");
+  });
+
+  it("never starts a line with closing punctuation", () => {
+    const zh = layoutLines("陪伴我走过六载春秋，感谢您的悉心教导与包容。", 90, measure, "zh");
+    for (const l of zh) expect(text(l)).not.toMatch(/^[，。]/);
+    const en = layoutLines("Hello there, friend!", 110, measure, "en");
+    for (const l of en) expect(text(l)).not.toMatch(/^[,!]/);
+  });
+
+  it("keeps Hindi words whole", () => {
+    const words = segments("जन्मदिन मुबारक हो", "hi").filter((s) => s.trim());
+    expect(words).toEqual(["जन्मदिन", "मुबारक", "हो"]);
   });
 });
 
-describe("fitText", () => {
-  it("returns the largest size that fits the box", () => {
-    const r = fitText("happy birthday dear friend", { w: 300, h: 40 }, measureAt, { max: 40, min: 10, lineHeight: 1 });
-    expect(r.height).toBeLessThanOrEqual(40);
-    expect(r.size).toBeGreaterThanOrEqual(20);
+describe("fitLines", () => {
+  const at = (size: number) => (s: string) => s.length * size * 0.5;
+  it("uses the largest size that fits the box", () => {
+    const fit = fitLines("a short message", { w: 400, h: 200 }, at, { max: 60, min: 20, lineHeight: 1.3 });
+    expect(fit.size).toBe(60);
+    expect(fit.height).toBeLessThanOrEqual(200);
   });
+  it("shrinks long messages", () => {
+    const long = "word ".repeat(80);
+    const fit = fitLines(long, { w: 400, h: 300 }, at, { max: 60, min: 20, lineHeight: 1.3 });
+    expect(fit.size).toBeLessThan(60);
+    expect(fit.size).toBeGreaterThanOrEqual(20);
+  });
+});
 
-  it("falls back to the minimum size when nothing fits", () => {
-    const r = fitText("a ".repeat(200), { w: 50, h: 10 }, measureAt, { max: 20, min: 10, lineHeight: 1 });
-    expect(r.size).toBe(10);
+describe("randomness", () => {
+  it("is repeatable per card, so the export matches the preview", () => {
+    const a = rng(seedFromId("abc"));
+    const b = rng(seedFromId("abc"));
+    expect([a(), a(), a()]).toEqual([b(), b(), b()]);
+    expect(seedFromId("abc")).not.toBe(seedFromId("abd"));
   });
 });

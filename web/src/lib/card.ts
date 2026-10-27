@@ -1,4 +1,5 @@
-import { CARD_FONTS, RTL_LANGS, type CardFontId } from "./data";
+import { language, occasionById, type LetteringId } from "./data";
+import { cardFonts, loadCardFonts, type CardFonts } from "./fonts";
 
 export const CARD_W = 1080;
 export const CARD_H = 1620;
@@ -8,88 +9,104 @@ export interface CardContent {
   message: string;
   signoff: string;
   language: string;
-  font: CardFontId;
-  wash: [string, string];
+  lettering: LetteringId;
+  occasion: string;
   seed: number;
+  /** Preview mode draws ruled lines instead of a message. */
+  placeholder?: boolean;
 }
 
-/** Sans fallbacks that cover Indic, CJK, Arabic etc. on Windows, macOS, Android and iOS. */
-const SCRIPT_FALLBACK =
-  '"Nirmala UI", "Noto Sans", "Noto Sans Devanagari", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", "Geeza Pro", "Kohinoor Devanagari", system-ui, sans-serif';
+type Img = CanvasImageSource & { width: number; height: number };
+type Measure = (s: string) => number;
 
-export function fontStack(primary: string): string {
-  return `"${primary}", ${SCRIPT_FALLBACK}`;
-}
+// ── Text layout ──────────────────────────────────────────────────────
 
-const NO_SPACE_SCRIPTS = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u0e00-\u0e7f\uac00-\ud7af]/;
+const NO_SPACE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u0e00-\u0e7f]/;
+const NO_LINE_START = /^[,.!?;:%)\]}'"’”»，。、！？；：）》〉」』】〕〗…‥·・ー々〜।॥،؛؟]+$/;
 
-/** Break text into wrap-able pieces: words for spaced scripts, characters for CJK/Thai. */
+/** Wrap-able pieces: words (plus their trailing spaces) or single CJK characters. */
 export function segments(text: string, lang: string): string[] {
   const Seg = (Intl as any).Segmenter;
   if (Seg) {
     const seg = new Seg(lang, { granularity: "word" });
     return Array.from(seg.segment(text) as Iterable<{ segment: string }>, (s) => s.segment);
   }
-  if (NO_SPACE_SCRIPTS.test(text)) return Array.from(text);
+  if (NO_SPACE.test(text)) return Array.from(text);
   return text.split(/(\s+)/).filter((s) => s.length);
 }
 
-type Measure = (s: string) => number;
+export interface Piece {
+  text: string;
+  w: number;
+  space: boolean;
+}
 
-export function wrapLines(text: string, maxWidth: number, measure: Measure, lang = "en"): string[] {
-  const lines: string[] = [];
+export interface Line {
+  pieces: Piece[];
+  width: number;
+}
+
+function trimLine(pieces: Piece[]): Line {
+  while (pieces.length && pieces[pieces.length - 1].space) pieces.pop();
+  while (pieces.length && pieces[0].space) pieces.shift();
+  return { pieces, width: pieces.reduce((a, p) => a + p.w, 0) };
+}
+
+export function layoutLines(text: string, maxWidth: number, measure: Measure, lang = "en"): Line[] {
+  const lines: Line[] = [];
   for (const para of text.split(/\n+/)) {
-    let line = "";
-    for (const piece of segments(para, lang)) {
-      const next = line + piece;
-      if (measure(next.trimEnd()) <= maxWidth || !line.trim()) {
-        line = next;
-        // Single pieces wider than the line (very long words) are split by character.
-        if (measure(line.trimEnd()) > maxWidth) {
-          let chunk = "";
-          for (const ch of Array.from(line)) {
-            if (measure(chunk + ch) > maxWidth && chunk) {
-              lines.push(chunk);
-              chunk = ch;
-            } else chunk += ch;
-          }
-          line = chunk;
-        }
-      } else {
-        lines.push(line.trim());
-        line = piece.trimStart();
+    let cur: Piece[] = [];
+    let width = 0;
+    const pieces = segments(para, lang).flatMap((s): Piece[] => {
+      const w = measure(s);
+      // Split anything wider than a line (very long words) into characters.
+      if (w > maxWidth && !/^\s+$/.test(s)) return Array.from(s).map((ch) => ({ text: ch, w: measure(ch), space: false }));
+      return [{ text: s, w, space: /^\s+$/.test(s) }];
+    });
+    for (const p of pieces) {
+      // Closing punctuation never starts a line; it hangs at the end of the previous one.
+      const hangs = NO_LINE_START.test(p.text) && cur.some((c) => !c.space) && !cur[cur.length - 1]?.space;
+      if (!p.space && !hangs && width + p.w > maxWidth && cur.some((c) => !c.space)) {
+        lines.push(trimLine(cur));
+        cur = [];
+        width = 0;
       }
+      if (p.space && cur.length === 0) continue;
+      cur.push(p);
+      width += p.w;
     }
-    if (line.trim()) lines.push(line.trim());
+    if (cur.some((c) => !c.space)) lines.push(trimLine(cur));
   }
   return lines;
 }
 
-export interface FitResult {
+export interface Fit {
   size: number;
-  lines: string[];
+  lines: Line[];
   height: number;
+  lineHeight: number;
 }
 
-/** Largest font size (in px) whose wrapped lines fit inside the box. */
-export function fitText(
+export function fitLines(
   text: string,
   box: { w: number; h: number },
   measureAt: (size: number) => Measure,
-  opts: { max: number; min: number; lineHeight: number; lang?: string },
-): FitResult {
-  let best: FitResult | null = null;
-  for (let size = opts.max; size >= opts.min; size -= 2) {
-    const lines = wrapLines(text, box.w, measureAt(size), opts.lang);
-    const height = lines.length * size * opts.lineHeight;
-    best = { size, lines, height };
-    if (height <= box.h) return best;
+  opts: { max: number; min: number; lineHeight: number; lang?: string; step?: number },
+): Fit {
+  let best: Fit | null = null;
+  for (let size = opts.max; size >= opts.min; size -= opts.step ?? 2) {
+    const lines = layoutLines(text, box.w, measureAt(size), opts.lang);
+    const lineHeight = size * opts.lineHeight;
+    best = { size, lines, height: lines.length * lineHeight, lineHeight };
+    if (best.height <= box.h) return best;
   }
-  return best ?? { size: opts.min, lines: [text], height: opts.min * opts.lineHeight };
+  return best!;
 }
 
-function mulberry(seed: number) {
-  let a = seed >>> 0;
+// ── Drawing helpers ──────────────────────────────────────────────────
+
+export function rng(seed: number) {
+  let a = seed >>> 0 || 1;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
@@ -99,156 +116,276 @@ function mulberry(seed: number) {
   };
 }
 
-function drawFallbackArt(ctx: CanvasRenderingContext2D, wash: [string, string], seed: number) {
-  const g = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
-  g.addColorStop(0, wash[0]);
-  g.addColorStop(1, wash[1]);
+function drawCover(ctx: CanvasRenderingContext2D, img: Img, h: number) {
+  const scale = Math.max(CARD_W / img.width, h / img.height);
+  const w = img.width * scale;
+  const ih = img.height * scale;
+  ctx.drawImage(img, (CARD_W - w) / 2, (h - ih) / 2.6, w, ih);
+}
+
+function drawWash(ctx: CanvasRenderingContext2D, occasion: string, seed: number, h: number) {
+  const o = occasionById(occasion);
+  const g = ctx.createLinearGradient(0, 0, CARD_W, h);
+  g.addColorStop(0, o.wash[0]);
+  g.addColorStop(1, o.wash[1]);
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, CARD_W, CARD_H);
-  const rnd = mulberry(seed);
-  for (let i = 0; i < 70; i++) {
-    ctx.globalAlpha = 0.18 + rnd() * 0.35;
-    ctx.fillStyle = rnd() > 0.5 ? "#ffffff" : wash[rnd() > 0.5 ? 0 : 1];
-    const r = 6 + rnd() * 26;
+  ctx.fillRect(0, 0, CARD_W, h);
+  const r = rng(seed);
+  for (let i = 0; i < 26; i++) {
+    ctx.globalAlpha = 0.12 + r() * 0.22;
+    ctx.fillStyle = "#ffffff";
+    const rad = 30 + r() * 140;
     ctx.beginPath();
-    ctx.arc(rnd() * CARD_W, rnd() * CARD_H * 0.62, r, 0, Math.PI * 2);
+    ctx.arc(r() * CARD_W, r() * h, rad, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.globalAlpha = 0.9;
+  ctx.font = `220px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(o.emoji, CARD_W / 2, h * 0.42);
   ctx.globalAlpha = 1;
+  ctx.textBaseline = "alphabetic";
 }
 
-function drawCover(ctx: CanvasRenderingContext2D, img: CanvasImageSource & { width: number; height: number }) {
-  const scale = Math.max(CARD_W / img.width, CARD_H / img.height);
-  const w = img.width * scale;
-  const h = img.height * scale;
-  ctx.drawImage(img, (CARD_W - w) / 2, (CARD_H - h) / 2, w, h);
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+/** A torn, deckled top edge so the note reads as real paper laid on the art. */
+function paperPath(ctx: CanvasRenderingContext2D, top: number, seed: number) {
+  const r = rng(seed * 7 + 3);
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
+  ctx.moveTo(-10, CARD_H + 10);
+  ctx.lineTo(-10, top + 6);
+  const a1 = r() * 6;
+  const a2 = r() * 6;
+  for (let x = 0; x <= CARD_W + 12; x += 6) {
+    const wave = Math.sin(x / 90 + a1) * 5 + Math.sin(x / 31 + a2) * 2.2;
+    ctx.lineTo(x, top + wave + (r() - 0.5) * 3.2);
+  }
+  ctx.lineTo(CARD_W + 10, CARD_H + 10);
   ctx.closePath();
 }
 
-export async function ensureFonts(font: CardFontId) {
-  const family = CARD_FONTS.find((f) => f.id === font)?.family ?? "Caveat";
-  if (!("fonts" in document)) return;
-  await Promise.allSettled([
-    document.fonts.load(`700 64px "Caprasimo"`),
-    document.fonts.load(`400 40px "${family}"`),
-    document.fonts.load(`700 40px "${family}"`),
-    document.fonts.load(`400 24px "Atkinson Hyperlegible"`),
-  ]);
+function drawPaper(ctx: CanvasRenderingContext2D, top: number, seed: number) {
+  ctx.save();
+  ctx.shadowColor = "rgba(30, 20, 40, 0.32)";
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = -4;
+  paperPath(ctx, top, seed);
+  const g = ctx.createLinearGradient(0, top, 0, CARD_H);
+  g.addColorStop(0, "#FDFAF4");
+  g.addColorStop(1, "#F7F1E6");
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.restore();
+
+  // Fibres and specks give the paper a tactile grain without an image asset.
+  ctx.save();
+  paperPath(ctx, top, seed);
+  ctx.clip();
+  const r = rng(seed * 13 + 5);
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 520; i++) {
+    const x = r() * CARD_W;
+    const y = top + r() * (CARD_H - top);
+    const len = 4 + r() * 16;
+    const ang = r() * Math.PI;
+    ctx.strokeStyle = r() > 0.5 ? "rgba(120, 96, 70, 0.07)" : "rgba(255, 255, 255, 0.5)";
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 900; i++) {
+    ctx.fillStyle = `rgba(90, 70, 50, ${0.03 + r() * 0.05})`;
+    ctx.fillRect(r() * CARD_W, top + r() * (CARD_H - top), 1.4, 1.4);
+  }
+  ctx.restore();
 }
 
-export function renderCard(
-  canvas: HTMLCanvasElement,
-  art: (CanvasImageSource & { width: number; height: number }) | null,
-  c: CardContent,
-) {
+interface InkOptions {
+  fonts: CardFonts;
+  size: number;
+  weight: number;
+  color: string;
+  rtl: boolean;
+  /** 0 = printed (no jitter), 1 = natural handwriting. */
+  hand: number;
+  rand: () => number;
+}
+
+/**
+ * Draw one line word by word. Handwriting gets the small irregularities of a
+ * real pen: an uneven baseline, slight tilt per word, a gentle line slope and
+ * varying ink density. Words are shaped whole, so Indic and Arabic joining is
+ * preserved.
+ */
+function drawLine(ctx: CanvasRenderingContext2D, line: Line, x0: number, y: number, maxW: number, align: "start" | "center" | "end", o: InkOptions) {
+  const slack = maxW - line.width;
+  let offset = align === "center" ? slack / 2 : align === "end" ? slack : 0;
+  if (o.hand) offset += (o.rand() - 0.5) * 10;
+  const slope = o.hand ? (o.rand() - 0.5) * 0.006 : 0;
+  ctx.font = `${o.weight} ${o.size}px ${o.fonts.body}`;
+  let cursor = 0;
+  for (const p of line.pieces) {
+    if (!p.space) {
+      const along = offset + cursor;
+      const px = o.rtl ? x0 + maxW - along - p.w : x0 + along;
+      const py = y + along * slope + (o.hand ? (o.rand() - 0.5) * o.size * 0.05 : 0);
+      ctx.save();
+      ctx.translate(px + p.w / 2, py);
+      if (o.hand) {
+        ctx.rotate((o.rand() - 0.5) * 0.022);
+        const s = 1 + (o.rand() - 0.5) * 0.035;
+        ctx.scale(s, s);
+        ctx.globalAlpha = 0.86 + o.rand() * 0.12;
+      }
+      ctx.fillStyle = o.color;
+      ctx.textAlign = "center";
+      ctx.fillText(p.text, 0, 0);
+      ctx.restore();
+    }
+    cursor += p.w;
+  }
+}
+
+// ── Card ─────────────────────────────────────────────────────────────
+
+export async function prepareFonts(c: CardContent): Promise<CardFonts> {
+  const fonts = cardFonts(c.language, c.lettering);
+  await loadCardFonts(fonts, `${c.title} ${c.message} ${c.signoff} Made with WishCraft`);
+  return fonts;
+}
+
+const INK = { hand: "#22305E", print: "#2A2233", title: "#8C1D45", rule: "rgba(70, 90, 140, 0.16)" };
+
+export function renderCard(canvas: HTMLCanvasElement, art: Img | null, c: CardContent, fonts = cardFonts(c.language, c.lettering)) {
   canvas.width = CARD_W;
   canvas.height = CARD_H;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  const rtl = RTL_LANGS.has(c.language);
-  const family = CARD_FONTS.find((f) => f.id === c.font)?.family ?? "Caveat";
-  const bodyWeight = c.font === "hand" ? 500 : 400;
-  const bodyScale = c.font === "hand" ? 1.18 : 1;
-
-  if (art) drawCover(ctx, art);
-  else drawFallbackArt(ctx, c.wash, c.seed);
-
-  const inset = 56;
-  const pad = 56;
-  const innerW = CARD_W - inset * 2 - pad * 2;
-  ctx.direction = rtl ? "rtl" : "ltr";
-  ctx.textBaseline = "alphabetic";
-
-  const measureAt = (stack: string, weight: number) => (size: number) => {
-    ctx.font = `${weight} ${size}px ${stack}`;
+  const lang = language(c.language);
+  const rtl = !!lang.rtl;
+  const hand = fonts.handwritten ? 1 : 0;
+  const pad = 96;
+  const innerW = CARD_W - pad * 2;
+  const measureAt = (family: string, weight: number) => (size: number) => {
+    ctx.font = `${weight} ${size}px ${family}`;
     return (s: string) => ctx.measureText(s).width;
   };
 
-  const title = fitText(c.title, { w: innerW, h: 170 }, measureAt(fontStack("Caprasimo"), 400), {
-    max: 82,
-    min: 40,
-    lineHeight: 1.1,
+  const title = fitLines(c.title || " ", { w: innerW, h: 190 }, measureAt(fonts.title, fonts.titleWeight), {
+    max: 86,
+    min: 44,
+    lineHeight: lang.script === "urdu" ? 1.9 : 1.18,
     lang: c.language,
   });
-  const signoffFit = fitText(c.signoff, { w: innerW, h: 90 }, measureAt(fontStack(family), bodyWeight), {
-    max: Math.round(40 * bodyScale),
-    min: 24,
-    lineHeight: 1.25,
+  const sigSize = Math.round(46 * fonts.bodyScale);
+  const sig = fitLines(c.signoff || " ", { w: innerW * 0.8, h: sigSize * 2.6 }, measureAt(fonts.signature, fonts.signatureWeight), {
+    max: sigSize,
+    min: Math.round(sigSize * 0.6),
+    lineHeight: 1.3,
     lang: c.language,
   });
-  // Keep the paper panel to about half the card so the art stays the hero.
-  const maxBodyH = CARD_H * 0.52 - title.height - signoffFit.height - pad * 2 - 100;
-  const body = fitText(c.message, { w: innerW, h: maxBodyH }, measureAt(fontStack(family), bodyWeight), {
-    max: Math.round(46 * bodyScale),
-    min: Math.round(24 * bodyScale),
-    lineHeight: c.font === "hand" ? 1.22 : 1.42,
-    lang: c.language,
-  });
+  const bodyLH = lang.script === "urdu" ? 2.1 : hand ? 1.36 : 1.5;
+  const maxBodyH = CARD_H * 0.58 - title.height - sig.height - 300;
+  const body = c.placeholder
+    ? { size: 40, lines: [] as Line[], height: 4 * 40 * bodyLH, lineHeight: 40 * bodyLH }
+    : fitLines(c.message || " ", { w: innerW, h: maxBodyH }, measureAt(fonts.body, fonts.bodyWeight), {
+        max: Math.round(48 * fonts.bodyScale),
+        min: Math.round(26 * fonts.bodyScale),
+        lineHeight: bodyLH,
+        lang: c.language,
+      });
 
-  const gap = 26;
-  const footer = 40;
-  const panelH = pad + title.height + gap + body.height + gap + signoffFit.height + footer + pad * 0.6;
-  const panelY = CARD_H - inset - panelH;
+  const gapTitle = 34;
+  const gapSig = 30;
+  const footer = 64;
+  const contentH = 70 + title.height + gapTitle + body.height + gapSig + sig.height + footer;
+  const paperTop = Math.round(Math.max(CARD_H * 0.42, Math.min(CARD_H * 0.62, CARD_H - contentH)));
+
+  if (art) drawCover(ctx, art, paperTop + 40);
+  else drawWash(ctx, c.occasion, c.seed, paperTop + 40);
+  drawPaper(ctx, paperTop, c.seed);
+
+  const rand = rng(c.seed * 31 + 7);
+  ctx.textBaseline = "alphabetic";
+  let y = paperTop + 70;
+
+  // Title: printed, centred, in the script's display face.
+  ctx.font = `${fonts.titleWeight} ${title.size}px ${fonts.title}`;
+  for (const line of title.lines) {
+    y += title.lineHeight;
+    drawLine(ctx, line, pad, y - title.lineHeight * 0.18, innerW, "center", {
+      fonts: { ...fonts, body: fonts.title },
+      size: title.size,
+      weight: fonts.titleWeight,
+      color: INK.title,
+      rtl,
+      hand: 0,
+      rand,
+    });
+  }
+
+  y += gapTitle;
+  if (c.placeholder) {
+    ctx.strokeStyle = INK.rule;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      const ly = y + body.lineHeight * (i + 1) - 10;
+      ctx.beginPath();
+      ctx.moveTo(pad, ly);
+      ctx.lineTo(pad + innerW * (i === 3 ? 0.55 : 1), ly);
+      ctx.stroke();
+    }
+    y += body.height;
+  } else {
+    for (const line of body.lines) {
+      y += body.lineHeight;
+      drawLine(ctx, line, pad, y - (body.lineHeight - body.size) * 0.45, innerW, hand ? "start" : "center", {
+        fonts,
+        size: body.size,
+        weight: fonts.bodyWeight,
+        color: hand ? INK.hand : INK.print,
+        rtl,
+        hand,
+        rand,
+      });
+    }
+  }
+
+  y += gapSig;
+  for (const line of sig.lines) {
+    y += sig.lineHeight;
+    drawLine(ctx, line, pad, y - sig.lineHeight * 0.2, innerW, "end", {
+      fonts: { ...fonts, body: fonts.signature },
+      size: sig.size,
+      weight: fonts.signatureWeight,
+      color: hand ? INK.hand : INK.print,
+      rtl,
+      hand,
+      rand,
+    });
+  }
 
   ctx.save();
-  ctx.shadowColor = "rgba(43, 30, 69, 0.28)";
-  ctx.shadowBlur = 40;
-  ctx.shadowOffsetY = 14;
-  roundRect(ctx, inset, panelY, CARD_W - inset * 2, panelH, 34);
-  ctx.fillStyle = "rgba(250, 246, 255, 0.94)";
-  ctx.fill();
-  ctx.restore();
-
-  const x = rtl ? CARD_W - inset - pad : inset + pad;
-  ctx.textAlign = rtl ? "right" : "left";
-  let y = panelY + pad;
-
-  ctx.fillStyle = "#D6336C";
-  ctx.font = `400 ${title.size}px ${fontStack("Caprasimo")}`;
-  for (const line of title.lines) {
-    y += title.size;
-    ctx.fillText(line, x, y);
-    y += title.size * 0.1;
-  }
-
-  y += gap;
-  ctx.fillStyle = "#2B1E45";
-  ctx.font = `${bodyWeight} ${body.size}px ${fontStack(family)}`;
-  const bodyLine = body.size * (c.font === "hand" ? 1.22 : 1.42);
-  for (const line of body.lines) {
-    y += bodyLine;
-    ctx.fillText(line, x, y - (bodyLine - body.size) / 2);
-  }
-
-  y += gap;
-  ctx.font = `${c.font === "hand" ? 700 : 600} ${signoffFit.size}px ${fontStack(family)}`;
-  ctx.textAlign = rtl ? "left" : "right";
-  const sx = rtl ? inset + pad : CARD_W - inset - pad;
-  for (const line of signoffFit.lines) {
-    y += signoffFit.size * 1.25;
-    ctx.fillText(line, sx, y);
-  }
-
-  ctx.textAlign = "center";
   ctx.direction = "ltr";
-  ctx.fillStyle = "rgba(43, 30, 69, 0.45)";
-  ctx.font = `400 22px ${fontStack("Atkinson Hyperlegible")}`;
-  ctx.fillText("Made with WishCraft on Anna", CARD_W / 2, panelY + panelH - pad * 0.45);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(60, 48, 72, 0.42)";
+  ctx.font = `500 21px "Figtree Variable", "Figtree", system-ui, sans-serif`;
+  ctx.fillText("Made with WishCraft on Anna", CARD_W / 2, CARD_H - 34);
+  ctx.restore();
 }
 
-export function canvasToBlob(canvas: HTMLCanvasElement, type = "image/jpeg", quality = 0.9): Promise<Blob> {
+export function canvasToBlob(canvas: HTMLCanvasElement, type = "image/jpeg", quality = 0.92): Promise<Blob> {
   return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Could not export the card"))), type, quality),
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Could not export the card."))), type, quality),
   );
+}
+
+export async function renderCardBlob(art: Img | null, c: CardContent): Promise<Blob> {
+  const fonts = await prepareFonts(c);
+  const canvas = document.createElement("canvas");
+  renderCard(canvas, art, c, fonts);
+  return canvasToBlob(canvas);
 }
 
 export function blobToDataUrl(blob: Blob): Promise<string> {
@@ -258,4 +395,18 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(blob);
   });
+}
+
+export async function imageToJpeg(bmp: ImageBitmap): Promise<Blob> {
+  const c = document.createElement("canvas");
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext("2d")?.drawImage(bmp, 0, 0);
+  return canvasToBlob(c, "image/jpeg", 0.9);
+}
+
+export function seedFromId(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  return h >>> 0;
 }

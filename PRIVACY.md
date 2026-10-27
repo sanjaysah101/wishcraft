@@ -12,13 +12,13 @@ These details go only to Anna's own AI services through Anna. They are used to w
 
 ## What is saved
 
-Each card you create is saved to **your own Anna storage** so you can find it again in **My cards** on any device. That includes the card's words, the finished card image, the art, the voice note and the song. WishCraft also remembers your last choices, such as your name, language, tone, art style and extras, so the form is ready next time.
+Each card you create is saved to **your own Anna storage** so you can find it again in **My cards** on any device. That includes the card's words, the finished card image, the art, the voice note and the song. WishCraft also remembers your last choices, such as your name, language, tone, art style and extras, so the form is ready next time. It also keeps the form you are filling in and which card is open, so if you close WishCraft halfway through, it picks up where you left off.
 
 Only you can see this data. The developer of WishCraft cannot read it.
 
 ## Deleting your data
 
-- To delete a card, open **My cards**, choose **Delete** under the card, then **Delete for good**. The card and its files are removed from your Anna storage.
+- To delete a card, open **My cards**, choose **Delete** under the card, then **Delete card**. The card and its files are removed from your Anna storage.
 - If you uninstall WishCraft, Anna handles the rest of the app's stored data under [Anna's own policies](https://anna.partners).
 
 ## Credits

@@ -1,0 +1,39 @@
+/* App UI */
+@import "@fontsource-variable/figtree";
+@import "@fontsource/instrument-serif/400.css";
+
+/* Card lettering, one family per writing system (see lib/fonts.ts). */
+@import "@fontsource/fraunces/600.css";
+@import "@fontsource/lora/400.css";
+@import "@fontsource/lora/600.css";
+@import "@fontsource/caveat/500.css";
+@import "@fontsource/caveat/600.css";
+@import "@fontsource/patrick-hand/400.css";
+@import "@fontsource/kalam/400.css";
+@import "@fontsource/kalam/700.css";
+@import "@fontsource/tiro-devanagari-hindi/400.css";
+@import "@fontsource/atma/500.css";
+@import "@fontsource/atma/600.css";
+@import "@fontsource/noto-serif-bengali/400.css";
+@import "@fontsource/noto-serif-bengali/600.css";
+@import "@fontsource/kavivanar/400.css";
+@import "@fontsource/noto-serif-tamil/400.css";
+@import "@fontsource/noto-serif-tamil/600.css";
+@import "@fontsource/gurajada/400.css";
+@import "@fontsource/noto-serif-telugu/400.css";
+@import "@fontsource/noto-serif-telugu/600.css";
+@import "@fontsource/farsan/400.css";
+@import "@fontsource/noto-serif-gujarati/400.css";
+@import "@fontsource/noto-serif-gujarati/600.css";
+@import "@fontsource/aref-ruqaa/400.css";
+@import "@fontsource/aref-ruqaa/700.css";
+@import "@fontsource/amiri/400.css";
+@import "@fontsource/amiri/700.css";
+@import "@fontsource/noto-nastaliq-urdu/400.css";
+@import "@fontsource/noto-nastaliq-urdu/600.css";
+@import "@fontsource/ma-shan-zheng/400.css";
+@import "@fontsource/klee-one/400.css";
+@import "@fontsource/klee-one/600.css";
+@import "@fontsource/nanum-pen-script/400.css";
+@import "@fontsource/gowun-batang/400.css";
+@import "@fontsource/gowun-batang/700.css";
