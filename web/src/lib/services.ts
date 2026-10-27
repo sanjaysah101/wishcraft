@@ -78,7 +78,7 @@ export async function awaitJob(
   const limit = opts.timeoutMs ?? 12 * 60 * 1000;
   let delay = 2500;
   for (;;) {
-    if (opts.signal?.aborted) throw new JobError("cancelled", "Stopped.");
+    if (opts.signal?.aborted) throw new JobError("aborted", "Stopped.");
     let view: any;
     try {
       view = await anna()[ns].getJob({ jobId });
@@ -102,6 +102,7 @@ export async function awaitJob(
 
 function sleep(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
     const t = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => {
       clearTimeout(t);

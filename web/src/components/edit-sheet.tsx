@@ -68,11 +68,19 @@ export function EditSheet({ view }: { view: CardView }) {
           </FieldSet>
           {view.voiceStale ? (
             <Field>
-              <Button variant="outline" disabled={r.stages.voice.state === "working"} onClick={() => studio.retry("voice")}>
+              <Button
+                variant="outline"
+                disabled={r.stages.voice.state === "working"}
+                onClick={async () => {
+                  // Save first so the stored card, its image and the new voice note all match.
+                  if (view.dirty) await studio.saveEdits();
+                  await studio.retry("voice");
+                }}
+              >
                 {r.stages.voice.state === "working" ? <Spinner data-icon="inline-start" /> : <MicIcon data-icon="inline-start" />}
                 Record the voice note again
               </Button>
-              <FieldDescription>The voice note still reads the old words.</FieldDescription>
+              <FieldDescription>The voice note still reads the old words. Your changes are saved first.</FieldDescription>
             </Field>
           ) : null}
           {r.extras.art ? (

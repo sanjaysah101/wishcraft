@@ -215,6 +215,76 @@ describe("closing the app mid-way", () => {
   });
 });
 
+describe("review regressions", () => {
+  it("a detached poll never fails the reopened card or starts a second paid job", async () => {
+    const run = studio.create(request, { art: true, voice: false, song: false }, "hand", catalogs);
+    await until(() => host.jobs.size === 1);
+    await studio.flush();
+    const id = studio.get()!.record.id;
+    studio.detach();
+    const reopened = studio.open((await getRecord(id))!);
+    await vi.advanceTimersByTimeAsync(6000);
+    await run;
+    expect(studio.get()!.record.stages.art.state).toBe("working");
+    host.finish("image");
+    await settle(reopened);
+    expect(studio.get()!.record.stages.art.state).toBe("done");
+    expect(host.rt.image.generateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a voice note recorded while the card was closed", async () => {
+    let release!: () => void;
+    host.rt.audio.speak.mockImplementationOnce(
+      () => new Promise((r) => (release = () => r({ audioBase64: btoa("ID3voice"), mimeType: "audio/mpeg" }))),
+    );
+    const run = studio.create(request, { art: false, voice: true, song: false }, "hand", catalogs);
+    await until(() => host.rt.audio.speak.mock.calls.length === 1);
+    await studio.flush();
+    const id = studio.get()!.record.id;
+    studio.detach();
+    release();
+    await settle(run);
+    await settle(studio.flush());
+    const saved = (await getRecord(id))!;
+    expect(saved.files.voice).toBe(`cards/${id}/voice.mp3`);
+    expect(saved.stages.voice.state).toBe("done");
+    expect(host.rt.audio.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("retrying after a failed upload reuses the finished job", async () => {
+    let fail = true;
+    const base = host.fetchMock.getMockImplementation()!;
+    host.fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url.endsWith("art.jpg") && fail) {
+        fail = false;
+        return new Response(null, { status: 500 });
+      }
+      return base(url, init);
+    });
+    const run = studio.create(request, { art: true, voice: false, song: false }, "hand", catalogs);
+    await until(() => host.jobs.size === 1);
+    host.finish("image");
+    await settle(run);
+    expect(studio.get()!.record.stages.art.state).toBe("failed");
+    await settle(studio.retry("art"));
+    expect(studio.get()!.record.stages.art.state).toBe("done");
+    expect(host.rt.image.generateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("never stores unsaved edits, and the ZIP uses the edited card", async () => {
+    const id = await settle(studio.create(request, { art: false, voice: true, song: false }, "hand", catalogs));
+    await studio.flush();
+    studio.editWords({ message: "Not saved yet." });
+    await settle(studio.retry("voice"));
+    await studio.flush();
+    expect((await getRecord(id))?.words?.message).not.toBe("Not saved yet.");
+    const { renderCardBlob } = await import("../web/src/lib/card");
+    const calls = (renderCardBlob as any).mock.calls.length;
+    await settle(studio.download("all"));
+    expect((renderCardBlob as any).mock.calls.length).toBe(calls + 1);
+  });
+});
+
 describe("stopping and retrying", () => {
   it("cancels running jobs and uses a fresh job on retry", async () => {
     const run = studio.create(request, { art: true, voice: false, song: false }, "hand", catalogs);

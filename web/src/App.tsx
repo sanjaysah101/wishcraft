@@ -176,6 +176,8 @@ export function App() {
   }, [ready, view, card?.record.id, request, extras, lettering]);
 
   useEffect(() => {
+    // Until the saved session is loaded, writing one would replace it with an empty form.
+    if (!ready) return;
     const flush = () => {
       saveSession({ view, openCardId: studio.get()?.record.id ?? null, draft: { request, extras, lettering } }, true);
     };
@@ -186,7 +188,7 @@ export function App() {
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", flush);
     };
-  }, [view, request, extras, lettering]);
+  }, [ready, view, request, extras, lettering]);
 
   const loadCards = useCallback(async () => {
     setCardsError(null);
